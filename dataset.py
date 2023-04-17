@@ -6,9 +6,7 @@ import numpy as np
 import sklearn
 import sklearn.svm
 
-import torch
-from torch import nn
-import torch.utils.data
+from abc import ABC, abstractmethod
 
 
 class MBTADataset:
@@ -74,9 +72,6 @@ class MBTADataset:
         red_line = self.df["Red_Numerator"] / self.df["Red_Denominator"]
         y = red_line.to_numpy()[self.window_size:]
         variables_df = self.df[[col for col in self.df.columns if col != "Date"]]
-        for col in variables_df.columns:
-            series = variables_df[col]
-            variables_df[col] = (series - series.min()) / (series.max() - series.min())
         # sliding window
         windows = variables_df.rolling(window=self.window_size)
         return windows, y
@@ -85,27 +80,21 @@ class MBTADataset:
         """
         Train/test split in numpy format. current implementation uses polynomial coefficients as features
         :param test_split: ratio of test split
+        :param transform: any transform to be applied here
         :return: train_X, train_y, test_X, test_y
         """
         X = []
         y = self.y
         # x coordinates for polynomial
-        poly_x = np.arange(self.window_size)
         for window in self.windows:
-            features = []
             # only fit on full windows, not initial few
             if len(window) == self.window_size:
-                for col in window.columns:
-                    # fit polynomial
-                    coef = np.polyfit(poly_x, window[col].to_numpy(), deg=2)
-                    coef = coef[:-1]  # ignore intercept
-                    features.append(coef)
-                features = np.stack(features).ravel()
+                features = window.to_numpy().ravel()
                 X.append(features)
         X = X[:-1]  # remove last data point, can't predict that one.
         X = np.stack(X)
-        # # train - validation - test split
-        # # 60 : 20 : 20
+        # # train - test split
+        # # 80 : 20
         length = len(self.y)
         train_length = int((1 - test_split) * length)
         test_length = length - train_length
@@ -115,48 +104,12 @@ class MBTADataset:
         test_X, test_y = X[train_length:], y[train_length:]
         return train_X, train_y, test_X, test_y
 
-    def make_torch_dataset(self, val_split=0.2, test_split=0.2, batch_size=8):
-        """
-        Train/val/test split, where every type is a tensor.
-        :param val_split: validation ratio
-        :param test_split: test ratio
-        :param batch_size: size of batch
-        :return: train_loader, val_loader, test_loader
-        """
-        X = []
-        for window in self.windows:
-            # only use full windows
-            if len(window) == self.window_size:
-                X.append(window.to_numpy().astype(np.float64))
-        X = X[:-1]  # remove last data point, can't predict that one.
-        X = np.stack(X)
-        # convert to tensor
-        X = torch.tensor(X).float().cpu()
 
-        y = self.y
-        y = y.reshape((-1, 1))
-        y = torch.tensor(y).float().cpu()  # convert to tensor
+class MBTATransform(ABC):
+    @abstractmethod
+    def fit_transform(self):
+        return None
 
-        # train - validation - test split
-        # 60 : 20 : 20
-        length = len(y)
-        train_length = int((1 - val_split - test_split) * length)
-        val_length = int(val_split * length)
-        test_length = int(test_split * length)
-        print(f"{train_length} samples in train set")
-        print(f"{val_length} samples in val set")
-        print(f"{test_length} samples in test set")
-        train_X, train_y = X[:train_length], y[:train_length]
-        val_X, val_y = X[train_length:train_length + val_length], y[train_length:train_length + val_length]
-        test_X, test_y = X[train_length + val_length:], y[train_length + val_length:]
-
-        # quirky pytorch stuff here. create dataset object from tensors,
-        # and then a method to access that data in batches
-        train_ds = torch.utils.data.TensorDataset(train_X, train_y)
-        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-        val_ds = torch.utils.data.TensorDataset(val_X, val_y)
-        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-        test_ds = torch.utils.data.TensorDataset(test_X, test_y)
-        test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-
-        return train_loader, val_loader, test_loader
+    @abstractmethod
+    def transform(self):
+        return None
